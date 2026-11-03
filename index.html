@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>手機定位測試</title>
+<style>
+:root { color-scheme: light dark; --bg: #f5f7f2; --card: #fff; --text: #1f2a1f; --muted: #5d695d; --line: #d5dcd2; --accent: #2f6b45; --on-accent: #fff; --bad: #a12d2d; }
+@media (prefers-color-scheme: dark) { :root { --bg: #151a16; --card: #1f2620; --text: #e8eee8; --muted: #a7b3a8; --line: #39443b; --accent: #5fb07f; --on-accent: #0d1a12; --bad: #f09a9a; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+main { max-width: 520px; margin: 0 auto; padding: 24px 16px 40px; }
+h1 { font-size: 1.4rem; margin: 0 0 4px; }
+p { margin: 0 0 12px; }
+.muted { color: var(--muted); font-size: .9rem; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 16px; overflow-wrap: anywhere; }
+button { width: 100%; min-height: 48px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); margin-top: 16px; }
+button:disabled { opacity: .6; cursor: default; }
+dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+#msg.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <h1>手機定位測試</h1>
+  <p class="muted">只測手機能不能定位。座標只顯示在這支手機，不會上傳或儲存。</p>
+  <button type="button" class="primary" id="go">取得目前位置</button>
+  <div class="card" aria-live="polite"><p id="msg" style="margin:0">還沒開始。請到戶外，按上面的按鈕。</p></div>
+  <div class="card" id="result" hidden>
+    <dl>
+      <dt>座標</dt><dd id="coord"></dd>
+      <dt>誤差</dt><dd id="acc"></dd>
+      <dt>取樣</dt><dd id="count"></dd>
+      <dt>花費</dt><dd id="took"></dd>
+    </dl>
+  </div>
+  <div class="card">
+    <button type="button" id="copy">複製測試結果</button>
+    <p class="muted" id="copied" style="margin:8px 0 0">會複製手機型號資訊和誤差，不含座標，可以直接貼回對話。</p>
+  </div>
+</main>
+<script>
+(() => {
+  const GOOD_M = 30, LIMIT_MS = 20000;
+  const $ = (id) => document.getElementById(id);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const inApp = /Line\/|FBAN|FBAV|Instagram|MicroMessenger|; wv\)/i.test(navigator.userAgent);
+  const log = { outcome: "未測試", acc: null, samples: 0, ms: null };
+  const help = (code) => code === 1
+    ? (isIOS ? "定位權限沒開：到 iPhone「設定 → 隱私權與安全性 → 定位服務」確認已開啟，並把「Safari 網站」設為「使用 App 期間」，然後重新整理再按一次。"
+      : "定位權限沒開：按網址列左邊的圖示，把「位置」設為允許；並確認手機的定位已開啟，然後重新整理再按一次。")
+    : code === 2 ? "手機目前抓不到位置：請確認定位已開啟，走到空曠處再按一次。"
+    : "這次定位逾時：請走到空曠處再按一次。";
+  const say = (t, bad) => { $("msg").textContent = t; $("msg").className = bad ? "bad" : ""; };
+  if (inApp) say(`這是 App 內建的瀏覽器，定位可能失敗。建議複製網址，貼到${isIOS ? " Safari" : " Chrome"} 開啟。`, true);
+  $("go").addEventListener("click", () => {
+    const fail = (outcome, text) => { log.outcome = outcome; say(text, true); $("go").disabled = false; };
+    if (!window.isSecureContext) return fail("非 HTTPS", "這個網址不是 HTTPS，手機不允許定位。");
+    if (!navigator.geolocation) return fail("瀏覽器不支援", "這個瀏覽器不支援定位，請改用 Safari 或 Chrome。");
+    const start = performance.now();
+    let best = null, done = false, watch = null, n = 0, timer = 0;
+    const show = () => {
+      $("result").hidden = false;
+      $("coord").textContent = best.lat.toFixed(6) + ", " + best.lng.toFixed(6);
+      $("acc").textContent = `約 ${best.acc} 公尺`;
+      $("count").textContent = `${n} 次`;
+      $("took").textContent = `${((performance.now() - start) / 1000).toFixed(1)} 秒`;
+    };
+    const finish = (error) => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      if (watch !== null) navigator.geolocation.clearWatch(watch);
+      log.samples = n; log.ms = Math.round(performance.now() - start);
+      if (best) {
+        log.outcome = "成功"; log.acc = best.acc; show();
+        say(best.acc > 100 ? `已定位，但誤差約 ${best.acc} 公尺偏大，可以走到空曠處再按一次。` : `定位成功，誤差約 ${best.acc} 公尺。`);
+        $("go").disabled = false;
+      } else fail(`失敗（代碼 ${error ? error.code : "?"}）`, help(error ? error.code : 3));
+    };
+    $("go").disabled = true; say("定位中，請稍候，最多 20 秒…");
+    timer = setTimeout(() => finish({ code: 3 }), LIMIT_MS);
+    watch = navigator.geolocation.watchPosition((p) => {
+      n++;
+      const c = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+      if (!best || c.acc < best.acc) best = c;
+      if (done) return;
+      show(); say(`定位中，目前誤差約 ${best.acc} 公尺…`);
+      if (best.acc <= GOOD_M) finish();
+    }, (ex) => finish(ex), { enableHighAccuracy: true, maximumAge: 0, timeout: LIMIT_MS });
+    if (done) navigator.geolocation.clearWatch(watch);
+  });
+  $("copy").addEventListener("click", async () => {
+    const text = `定位測試結果：${log.outcome}；誤差 ${log.acc === null ? "無" : log.acc + " 公尺"}；取樣 ${log.samples} 次；${log.ms === null ? "未計時" : (log.ms / 1000).toFixed(1) + " 秒"}；${navigator.userAgent}`;
+    try { await navigator.clipboard.writeText(text); $("copied").textContent = "已複製，可以貼回對話。"; }
+    catch { $("copied").textContent = text; }
+  });
+})();
+</script>
+</body>
+</html>
